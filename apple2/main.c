@@ -3,9 +3,17 @@
   This is free and unencumbered software released into the public domain.
 \*---------------------------------------------------------------------------*/
 
+#define CFGFILE apple2-hgr.cfg
+
 #include <string.h>
 #include "globals.h"
 #include "plat.h"
+#include "data.h"
+//#link "plat-a2.c"
+//#link "data.c"
+//#link "assembly.s"
+//#link "decomp.s"
+//#resource "Gomoku.lzh"
 
 uchar board[BOARD_Y][BOARD_X];      // The visible board
 uchar scoreBoard[BOARD_Y][BOARD_X]; // The AI scoring board

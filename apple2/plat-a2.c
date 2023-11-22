@@ -3,36 +3,45 @@
   This is free and unencumbered software released into the public domain.
 \*---------------------------------------------------------------------------*/
 
-#include <c64.h>
-#include <stdio.h>
+#include <apple2.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <conio.h>
 #include <string.h>
-#include "../plat.h"
+#include <peekpoke.h>
+#include "globals.h"
+#include "plat.h"
 #include "data.h"
 
-// System locations
-#define VIC_BASE_RAM            (0xC000)
-#define BITMAP_OFFSET           (0x0000)
-#define SCREEN_RAM              ((char*)VIC_BASE_RAM + 0x2000)
-#define CHARMAP_RAM             ((char*)VIC_BASE_RAM + 0x2800)
+#define TXTCLR              0xC050      /* Display graphics */
+#define TXTSET              0xC051      /* Display text */
+#define MIXCLR              0xC052      /* Disable 4 lines of text */
+#define MIXSET              0xC053      /* Enable 4 lines of text */
+#define LOWSCR              0xC054      /* Page 1 */
+#define HISCR               0xC055      /* Page 2 */
+#define LORES               0xC056      /* Lores graphics */
+#define HIRES               0xC057      /* Hires graphics */
 
-#define SCREEN_WIDTH            40
-#define SCREEN_HEIGHT           25
+#define PAGE1MEM            0x2000      /* HGR Page 1 memory address */
+#define PAGE2MEM            0x4000      /* HGR Page 2 memory address */
+#define PAGE_SIZE           0x2000      /* Byte size of an HGR memory Page */
 
-// assembly external function prototypes.  See .s files
-extern void  __fastcall__ asm_ClearScreen();
-extern void  __fastcall__ asm_ShowFont(uchar row, uchar col, uchar style, const char* character);
+#define SCREEN_HEIGHT_GFX   192         /* Pixels vertical */
+#define COLOR_WIDTH         140         /* Pixels horizontal (2 bpp) */
+#define SCREEN_HEIGHT       (SCREEN_HEIGHT_GFX/8)
+
+extern uchar __fastcall__ asm_DetectMachine();
+extern void  __fastcall__ asm_ClearHiRes();
 extern void  __fastcall__ asm_ShowTile(uchar row, uchar col, const char* even, const char* odd);
+extern void  __fastcall__ asm_ShowFont(uchar row, uchar col, uchar style, const char* character);
+extern void  __fastcall__ asm_InvertSquare(uchar row, uchar col);
 extern void  __fastcall__ asm_DecompSplash();
 
 // String to hold dynamic display strings (sprintf dest)
 char string[21];
-// Back up a few C64 specific hardware values
-static char sc_pra, sc_vad, sc_ct1, sc_ct2, sc_vbc;
 plat_TimeType current_time = 0, current_ticks = 0, time_scale = 800;
 
-// Help text specific to the C64
+// Help text specific to the Apple 2
 char* helpStrings[] =
 {
     "The object of the",
@@ -55,74 +64,34 @@ char* helpStrings[] =
     "U or R for Undo or",
     "Redo.",
     "",
-    "RUN-STOP to quit.",
+    "ESC to quit.",
 };
 const uchar numHelpStrings = sizeof(helpStrings) / sizeof(helpStrings[0]);
 
+
 /*
- * Graphics mode
+ * Graphics mode, page 1
  */
 void plat_Init()
 {
-    if(plat_CanQuit())
-    {
-        // Save these values so they can be restored
-        sc_pra = CIA2.pra;
-        sc_vad = VIC.addr;
-        sc_ct1 = VIC.ctrl1;
-        sc_ct2 = VIC.ctrl2;
-        sc_vbc = VIC.bordercolor;
-    }
+    POKE(TXTCLR, 0);                    // Display Graphics
+    POKE(LOWSCR, 0);                    // Set Page 1 "On"
+    POKE(HIRES, 0);                     // 280x192 Monochrome or 140x192 color
+    POKE(MIXCLR, 0);                    // Disable 4 lines of text
 
-    // set the border and blank the screen for setup
-    VIC.bordercolor = COLOR_GREEN;
-    VIC.bgcolor0 = COLOR_GREEN;
-    VIC.ctrl1 &= 239;
-    
-    // Select the bank
-    CIA2.pra = (CIA2.pra & 0xFC) | (3 - (VIC_BASE_RAM >> 14));
-    // Set the location of the Screen (color) and bitmap (0 or 8192 only)
-    VIC.addr = ((((int)(SCREEN_RAM - VIC_BASE_RAM) / 0x0400) << 4) | (BITMAP_OFFSET / 0X400));
-
-    // Turn on HiRes mode
-    VIC.ctrl1 = (VIC.ctrl1 & 0xBF) | 0x20;
-    VIC.ctrl2 = VIC.ctrl2 | 0x10;
-
-    // Clear all pixels on the screen
-    plat_ClearScreen();
-
-    // Pixel masks:
-    // GREEN  - %00 for background color 0 ($d021)
-    // WHITE  - %01 for the upper nibble of the screen matrix
-    // PURPLE - %10 for lower nibble of the screen matrix
-    // BLACK  - %11 for the lower nibble of color RAM
-
-    // set the base screen colors
-    memset(SCREEN_RAM, COLOR_WHITE<<4|COLOR_PURPLE, 0x400);
-    memset(COLOR_RAM, COLOR_BLACK, 0x400);
-
-    // Attempt to clear the basic stub so the program can't be re-run
-    *(char*)0x801 = 0;
-    *(char*)0x802 = 0;
-
-    // Un-blank the screen
-    VIC.ctrl1 |= 16;
+    // Detect the IIgs and IIc+ and make the delay longer
+    // Does not detect any accelerators
+    if(asm_DetectMachine() & 1)
+        plat_TimeScale(time_scale * 3);
 }
+
 
 /*
  * Back to text mode
  */
 void plat_Shutdown()
 {
-    VIC.bordercolor = sc_vbc;
-    VIC.ctrl2       = sc_ct2;
-    VIC.ctrl1       = sc_ct1;
-    VIC.addr        = sc_vad;
-    CIA2.pra        = sc_pra;
-
-    // Switch back to uppercase
-    __asm__("lda #142");
-    __asm__("jsr $ffd2");
+    POKE(TXTSET, 0);
 }
 
 /*
@@ -138,7 +107,6 @@ uchar plat_CanQuit()
  */
 void plat_SeedRandom()
 {
-    srand(CIA1.ta_lo);
 }
 
 /*
@@ -154,12 +122,12 @@ uchar plat_Random(uchar max)
  */
 void plat_ClearScreen()
 {
-    asm_ClearScreen();
+    asm_ClearHiRes();
 }
 
 /*
- * Draws a null terminated string at y (0..200) and X (a column number) in one of the 
- * 3 styles.  Does not clip at all (so 0..192 for the 8 pixel high font)
+ * Draws a null terminated string at y (0..192) and X (a column number) in one of the 
+ * 4 styles.  Does not clip at all (so 0..183 for the 8 pixel high font)
  */
 void plat_ShowText(uint rawY, uchar colX, uchar style, char* text)
 {
@@ -168,7 +136,7 @@ void plat_ShowText(uint rawY, uchar colX, uchar style, char* text)
     while((c = text[index++]))
     {
         if(c >= 96)
-            c -= 152;
+            c -= 56;
         else if(c >= 65)
             c -= 50;
         else if(c >= 44)
@@ -193,19 +161,19 @@ uchar plat_ShowSplash()
 }
 
 /*
- * Show the prepared help text for the c64
+ * Show the prepared help text for the apple 2
  */
 void plat_ShowHelp()
 {
     uchar i, y = 16;
 
     plat_ClearScreen();
-    plat_ShowText(0,7,2,"Gomoku");
+    plat_ShowText(0,7,3,"Gomoku");
     for(i = 0; i < numHelpStrings; i++, y += 8)
     {
-        plat_ShowText(y, 0, i < 7 ? 1 : 0, helpStrings[i]);
+        plat_ShowText(y, 0, i < 7 ? 0 : 1, helpStrings[i]);
     }
-    plat_ShowText(191, 0, 2, "Any key to continue ");
+    plat_ShowText(183, 0, 2, "Any key to continue ");
     plat_ReadKeys(60);
     plat_ClearScreen();
 }
@@ -217,21 +185,21 @@ void plat_ShowHelp()
 uchar plat_Menu(Menu* m, uchar timeout)
 {
     uchar i, y, sel = 0, j = 0;
-    uchar spacingY = SCREEN_HEIGHT / (m->menuItems->count + 2);
-    uchar yTop = (SCREEN_HEIGHT - (spacingY * m->menuItems->count)) / 2 ;
+    uchar spacingY = SCREEN_HEIGHT_GFX / (m->menuItems->count + 4);
+    uchar yTop = (SCREEN_HEIGHT_GFX - (spacingY * m->menuItems->count)) / 2 ;
     plat_TimeType now = plat_TimeGet();
 
-    plat_ShowText(yTop-2,(20-strlen(m->Title))/2, 2, m->Title);
+    plat_ShowText(4,(20-strlen(m->Title))/2, 0, m->Title);
 
     y = yTop;
     for(i =0; i < m->menuItems->count; i++)
     {
-        plat_ShowText(y*8, 1, sel == i ? 1 : 0, m->menuItems->MenuItems[i]);
+        plat_ShowText(y, 1, sel == i ? 3 : 0, m->menuItems->MenuItems[i]);
         if(j < m->numChoices)
         {
             if(m->itemChoices[j].item == i)
             {
-                plat_ShowText(y*8, 10, 0, m->itemChoices[j].select->MenuItems[m->activeChoice[j]]);
+                plat_ShowText(y, 10, 1, m->itemChoices[j].select->MenuItems[m->activeChoice[j]]);
                 j++;
             }
         }
@@ -249,20 +217,20 @@ uchar plat_Menu(Menu* m, uchar timeout)
         {
             case INPUT_UP:
             case INPUT_LEFT:
-                plat_ShowText(y*8, 1, 0, m->menuItems->MenuItems[sel]);
+                plat_ShowText(y, 1, 0, m->menuItems->MenuItems[sel]);
                 if(--sel > m->menuItems->count)
                     sel = m->menuItems->count - 1;
                 y = yTop + spacingY * sel;
-                plat_ShowText(y*8, 1, 1, m->menuItems->MenuItems[sel]);
+                plat_ShowText(y, 1, 3, m->menuItems->MenuItems[sel]);
                 break;
 
             case INPUT_DOWN:
             case INPUT_RIGHT:
-                plat_ShowText(y*8, 1, 0, m->menuItems->MenuItems[sel]);
+                plat_ShowText(y, 1, 0, m->menuItems->MenuItems[sel]);
                 if(++sel >= m->menuItems->count)
                     sel = 0;
                 y = yTop + spacingY * sel;
-                plat_ShowText(y*8, 1, 1, m->menuItems->MenuItems[sel]);                    
+                plat_ShowText(y, 1, 3, m->menuItems->MenuItems[sel]);                    
                 break;
 
             case INPUT_SELECT:
@@ -275,7 +243,7 @@ uchar plat_Menu(Menu* m, uchar timeout)
                         j = 1;
                         if(++m->activeChoice[i] >= m->itemChoices[i].select->count)
                             m->activeChoice[i] = 0;
-                        plat_ShowText(y*8, 10, 0, m->itemChoices[i].select->MenuItems[m->activeChoice[i]]);
+                        plat_ShowText(y, 10, 1, m->itemChoices[i].select->MenuItems[m->activeChoice[i]]);
                         break;
                     }
                 }
@@ -300,10 +268,13 @@ uchar plat_Menu(Menu* m, uchar timeout)
  */
 void plat_ShowBoard()
 {
+    // Draw the corners
     asm_ShowTile(0, 1, tileData[EVEN_BLANK], tileData[ODD_CORNER_UL]);
     asm_ShowTile(0, 2+BOARD_X, tileData[EVEN_LINE_HORIZONTAL_DIV], tileData[ODD_LINE_DOWN_TOP_HALF]);
     asm_ShowTile(1+BOARD_Y, 1        , tileData[EVEN_BLANK]              , tileData[ODD_CORNER_LL]);
     asm_ShowTile(1+BOARD_Y, 2+BOARD_X, tileData[EVEN_LINE_HORIZONTAL_DIV], tileData[ODD_LINE_DOWN_BOTTOM_HALF]);
+
+    // Draw the border lines
     for(move_y = 0; move_y < BOARD_Y; move_y++) {
         asm_ShowTile(0        , 2+move_y , tileData[EVEN_LINE_HORIZONTAL_DIV], tileData[ODD_CORNER_UL]);
         asm_ShowTile(1+move_y , 1        , tileData[EVEN_BLANK]              , tileData[ODD_LEFT_DOWN_HORIZONTAL_DIV]);
@@ -311,16 +282,20 @@ void plat_ShowBoard()
         asm_ShowTile(BOARD_Y+1, 2+move_y , tileData[EVEN_LINE_HORIZONTAL_DIV], tileData[ODD_CORNER_LL]);
     }
 
-    plat_ShowText(172, 2, 2, "ABCDEFGHIJKLMNO");
+    // Show the vertical label
+    plat_ShowText(192-8, 2, 0, "ABCDEFGHIJKLMNO");
+
+    // Show the horizontal label, and fill in the middle
     for(move_y = 0; move_y < BOARD_Y; move_y++)
     {
         sprintf(string,"%c",'a'+move_y);
-        plat_ShowText((1+move_y)*TILE_HEIGHT, 0, 2, string);
+        plat_ShowText((1+move_y)*TILE_HEIGHT, 0, 0, string);
         for(move_x=0; move_x < BOARD_X ; move_x++) {
             asm_ShowTile(1+move_y, 2+move_x, tileData[EVEN_LINE_HORIZONTAL_DIV], tileData[ODD_LEFT_DOWN_HORIZONTAL_DIV]);
         }
     }
 
+    // Show the black piece
     move_x = (BOARD_X/2);
     move_y = (BOARD_Y/2);
     plat_ShowMove();
@@ -347,31 +322,11 @@ void plat_ShowMove()
 }
 
 /*
- * Use pre-canned colourd selection tiles to show selector on, and regular tiles to show off
+ * Use asm routine to mask, unmask the MSB of the drawn tile, thus highlighting it
  */
-void plat_SelectCursor(uchar y, uchar x, uchar on)
+void plat_SelectCursor(uchar y, uchar x, uchar )
 {
-    move_y = y;
-    move_x = x;
-    if(on)
-    {
-        uchar piece = board[move_y][move_x];
-        if(piece)
-        {
-            if(1 == piece)
-                asm_ShowTile(1+move_y, 2+move_x, tileData[SEL_EVEN_BLACK], tileData[SEL_ODD_BLACK]);
-            else
-                asm_ShowTile(1+move_y, 2+move_x, tileData[SEL_EVEN_WHITE], tileData[SEL_ODD_WHITE]);
-        }
-        else
-        {
-            asm_ShowTile(1+move_y, 2+move_x, tileData[SEL_EVEN_BLANK], tileData[SEL_ODD_BLANK]);
-        }
-    }
-    else
-    {
-        plat_ShowMove();
-    }
+    asm_InvertSquare(1+y, 2+x);
 }
 
 /*
@@ -379,19 +334,18 @@ void plat_SelectCursor(uchar y, uchar x, uchar on)
  */
 void plat_LogMove()
 {
-    #define TITLE_ROWS 1
-    #define FOOTER_ROWS 4
+    #define TITLE_ROWS 2
     uchar color, start, skip, row = TITLE_ROWS;
 
-    if(sp >= (SCREEN_HEIGHT - FOOTER_ROWS - TITLE_ROWS - 1))
+    if(sp >= (SCREEN_HEIGHT - TITLE_ROWS - 1))
     {
-        start = sp - (SCREEN_HEIGHT - FOOTER_ROWS - TITLE_ROWS - 1);
+        start = sp - (SCREEN_HEIGHT - TITLE_ROWS - 1);
         skip = 0;
     }
     else
     {
         start = 0;
-        skip = (SCREEN_HEIGHT - FOOTER_ROWS - TITLE_ROWS - 1) - sp;
+        skip = (SCREEN_HEIGHT - TITLE_ROWS - 1) - sp;
     }
 
     while(skip--)
@@ -410,7 +364,7 @@ void plat_LogMove()
         uchar move = moveStack[start];
         sprintf(string, "%c%c", 'a'+(move >> 4), 'A'+(move & 0x0f));
         color ^= 1;
-        plat_ShowText(row*8, 18, 1-color, string);
+        plat_ShowText(row*8, 18, color, string);
         row++;
         start++;
     }
@@ -423,13 +377,12 @@ void plat_Winner(uchar winner)
 {
     if(winner)
     {
-        --winner;
         sprintf(string, "Player %d wins in %3d", winner, sp);
-        plat_ShowText(192, 0, winner, string);
+        plat_ShowText(4, 0, 4-winner, string);
     }
     else
     {
-        plat_ShowText(192, 0, 2, "    It is a draw    ");
+        plat_ShowText(4, 0, 3, "    It is a draw    ");
     }
 }
 
@@ -507,44 +460,49 @@ int plat_ReadKeys(uchar timeout)
     key = cgetc();
     switch(key)
     {
-        case 87:        // w
-        case 145:       // Up
-            keyMask |= INPUT_UP;
+        case 'A':
+        case 'a':
+        case CH_CURS_LEFT:
+            keyMask |= INPUT_LEFT;
         break;
 
-        case 68:        //d
-        case 29:        // Right
+        case 'D':
+        case 'd':
+        case CH_CURS_RIGHT:
             keyMask |= INPUT_RIGHT;
         break;
 
-        case 83:        // s
-        case 17:        // Down
+        case 'W':
+        case 'w':       // Reasonably located on the ][ keyboard
+        case 0x0B:      // No CH_CURS_UP in apple2.h, only in apple2enh.h
+            keyMask |= INPUT_UP;
+        break;
+
+        case 'S':
+        case 's':       // Reasonably located on the ][ keyboard
+        case 0x0A:      // No CH_CURS_DOWN in apple2.h, only in apple2enh.h
             keyMask |= INPUT_DOWN;
         break;
 
-        case 65:        // a
-        case 157:       // Left
-            keyMask |= INPUT_LEFT;
-        break;
-        
-        case 3:         // Run Stop
+        case CH_ESC:
             keyMask |= INPUT_ESCAPE;
         break;
 
-        case 32:        // Space
-        case 13:        // Enter
+        case ' ':
+        case CH_ENTER:
             keyMask |= INPUT_SELECT;
         break;
-        
-        case 82:        // u
+
+        case 'R':
+        case 'r':
             keyMask |= INPUT_REDO;
         break;
-        
-        case 85:        // r
+
+        case 'U':
+        case 'u':
             keyMask |= INPUT_UNDO;
         break;
     }
-    
+
     return keyMask;
 }
-

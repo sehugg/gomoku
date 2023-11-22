@@ -1,5 +1,10 @@
 # Gomoku
 The game of Gomoku written for 8-bit computers using cc65  
+
+Forked from https://github.com/StewBC/gomoku
+
+[Open this project in
+8bitworkshop](http://8bitworkshop.com/redir.html?platform=apple2&githubURL=https%3A%2F%2Fgithub.com%2Fsehugg%2Fgomoku%2Ftree%2Fmain%2Fapple2&file=main.c).
   
 0. UPDATES  
 Jan 7, 2023 - Initial Version - Apple 2 and Windows Console (Powershell).  
